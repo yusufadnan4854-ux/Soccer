@@ -93,7 +93,6 @@ def group_paragraphs(paragraphs, min_words=80):
             
     return groups
 
-# --- আপডেটেড সিম্পল কি-ওয়ার্ড মেথড (কম্পিউটার সফটওয়্যার থেকে সংগৃহীত) ---
 def get_primary_keyword_app_logic(text):
     words = re.findall(r'\b[A-Z][a-z]{3,}\b', text) 
     if len(words) < 2:
@@ -111,7 +110,6 @@ def get_primary_keyword_app_logic(text):
     keyword = f"{most_common[0][0]} {most_common[1][0]}"
     print(f"📊 [App Matching Logic] Primary Subject Keyword Extracted: '{keyword}'")
     return keyword
-# ------------------------------------------------------------------------
 
 def search_vercel_cloud_bridge(keyword, engine="ddg"):
     vercel_endpoint = os.environ.get("VERCEL_BRIDGE_URL")
@@ -172,13 +170,30 @@ def search_wikimedia_images(keyword, max_results=15):
     except: pass
     return []
 
-def scrape_images_strictly_web(title, body_text, embedded_photos, num_images_needed=20):
+def scrape_images_strictly_web(title, body_text, embedded_photos, num_images_needed=20, append_toggle=False, append_word=""):
     candidates = []
     
     for hero_p in embedded_photos:
         candidates.append(hero_p)
         
     subject = get_primary_keyword_app_logic(body_text)
+
+    if append_toggle and append_word:
+        stop_phrases = {
+            'los angeles', 'golden state', 'nba basketball', 'summer league', 
+            'boston celtics', 'new york', 'miami heat', 'bay area', 'dallas mavericks', 
+            'lakers', 'latest update', 'sports news', 'league update', 'news report'
+        }
+        is_name = False
+        
+        if subject.lower() not in stop_phrases:
+            is_name = bool(re.match(r'^([A-Z][a-zA-Z\'-]+\s+){1,2}[A-Z][a-zA-Z\'-]+$', subject.strip()))
+            
+        if not is_name:
+            subject = f"{subject} {append_word}"
+            print(f"🔧 [Modifier Action] Keyword is not a name. Custom suffix appended -> Final Search: '{subject}'")
+        else:
+            print(f"👤 [Modifier Action] Player name detected! Prefix/Suffix addition skipped -> Final Search: '{subject}'")
 
     ddg_pics = search_vercel_cloud_bridge(subject, engine="ddg")
     candidates.extend(ddg_pics)
@@ -440,11 +455,13 @@ def process_primary_automation_loop():
     blocked_inside_words = [bk.strip().lower() for bk in user_settings["exclude_body_keywords"].split(",") if bk.strip()]
     require_wc = user_settings.get("min_word_count", 150)
     sfx_volume = user_settings.get("sfx_volume", 0.3)
+    
+    append_kwd_feature = user_settings.get("append_keyword_feature", False)
+    append_suffix = user_settings.get("append_word_suffix", "")
 
     for track_loop_counter, finalizer_target in enumerate(final_action_items):
         vid_ttl, lns = finalizer_target.get("title", ""), finalizer_target.get("link", "")
         
-        # টাইটেল সংক্রান্ত সমস্যা সমাধানের অংশ (খালি অথবা "unknown" টাইটেল পেলে লিংক থেকে উদ্ধার করবে)
         vid_ttl = str(vid_ttl).strip()
         if not vid_ttl or vid_ttl.lower() == "unknown":
             try:
@@ -454,7 +471,6 @@ def process_primary_automation_loop():
                     slug_string = re.sub(r'\.[a-zA-Z0-9]+$', '', path_segments[-1])
                     vid_ttl = slug_string.replace('-', ' ').replace('_', ' ').strip().title()
                 
-                # যদি এরপরও টাইটেল খালি আসে 
                 if not vid_ttl:
                     vid_ttl = "NBA Latest News Update"
             except Exception:
@@ -519,7 +535,7 @@ def process_primary_automation_loop():
                 num_images_to_download = max(2, min(40, total_n_segments))
                 print(f"📥 Length-based download target: downloading {num_images_to_download} images for {total_n_segments} sentences.")
 
-                candidate_image_urls = scrape_images_strictly_web(vid_ttl, text_chunk_collected, embedded_page_photos, num_images_needed=num_images_to_download)
+                candidate_image_urls = scrape_images_strictly_web(vid_ttl, text_chunk_collected, embedded_page_photos, num_images_needed=num_images_to_download, append_toggle=append_kwd_feature, append_word=append_suffix)
 
                 successfully_got_downloads = 0
                 headers = {
@@ -544,7 +560,7 @@ def process_primary_automation_loop():
 
                 if not dflocst:
                     print("⚠️ No direct photos. Running fallback search with general title keywords...")
-                    fallback_urls = scrape_images_strictly_web(vid_ttl, vid_ttl, [], num_images_needed=num_images_to_download)
+                    fallback_urls = scrape_images_strictly_web(vid_ttl, vid_ttl, [], num_images_needed=num_images_to_download, append_toggle=append_kwd_feature, append_word=append_suffix)
                     for image_link in fallback_urls[:5]:
                         try:
                             rd = requests.get(image_link, timeout=5, headers=headers)
@@ -623,7 +639,7 @@ def process_primary_automation_loop():
                 subprocess.run(["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-safe", "0", "-f", "concat", "-i", os.path.abspath(tmpsldr_txt_path).replace("\\", "/"), "-i", os.path.abspath(path_sfx_mp3).replace("\\", "/"), "-c:v", "copy", "-c:a", "copy", "-shortest", os.path.abspath(raw_tmp_output).replace("\\", "/")], check=True)
 
                 clx_pri = hex_to_ass_color(user_settings["font_color"], 1.0)
-                clx_bkg = hex_to_ass_color(user_settings["bg_color"], user_settings.get("bg_opacity", 0.5))
+                clx_bkg = hex_to_ass_color(user_settings["bg_color"], user_settings.get("bg_opacity", 0.6))
                 stylstr_for_subs = f"FontName=Arial,FontSize={user_settings['font_size']},PrimaryColour={clx_pri},BackColour={clx_bkg},BorderStyle={user_settings['border_style']},Outline=2,Shadow=1,Alignment=2,MarginV={user_settings['margin_v']}"
 
                 safe_srt_path = os.path.relpath(path_srt).replace("\\", "/").replace("'", "'\\''")
@@ -682,7 +698,8 @@ def process_primary_automation_loop():
                     print(f"📥 Cluster download target: downloading {num_images_to_download} images for {total_n_segments} sentences.")
 
                     grp_keyword = get_primary_keyword_app_logic(grp_text)
-                    candidate_image_urls = scrape_images_strictly_web(vid_ttl, grp_text, embedded_page_photos, num_images_needed=num_images_to_download)
+                    
+                    candidate_image_urls = scrape_images_strictly_web(vid_ttl, grp_text, embedded_page_photos, num_images_needed=num_images_to_download, append_toggle=append_kwd_feature, append_word=append_suffix)
 
                     successfully_got_downloads = 0
                     headers = {
@@ -707,7 +724,7 @@ def process_primary_automation_loop():
 
                     if not dflocst:
                         print("⚠️ No direct photos. Running fallback search with general title keywords...")
-                        fallback_urls = scrape_images_strictly_web(vid_ttl, vid_ttl, [], num_images_needed=num_images_to_download)
+                        fallback_urls = scrape_images_strictly_web(vid_ttl, vid_ttl, [], num_images_needed=num_images_to_download, append_toggle=append_kwd_feature, append_word=append_suffix)
                         for image_link in fallback_urls[:5]:
                             try:
                                 rd = requests.get(image_link, timeout=5, headers=headers)
@@ -787,7 +804,7 @@ def process_primary_automation_loop():
                     subprocess.run(["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-safe", "0", "-f", "concat", "-i", os.path.abspath(tmpsldr_txt_path).replace("\\", "/"), "-i", os.path.abspath(path_sfx_mp3).replace("\\", "/"), "-c:v", "copy", "-c:a", "copy", "-shortest", os.path.abspath(raw_tmp_output).replace("\\", "/")], check=True)
 
                     clx_pri = hex_to_ass_color(user_settings["font_color"], 1.0)
-                    clx_bkg = hex_to_ass_color(user_settings["bg_color"], user_settings.get("bg_opacity", 0.5))
+                    clx_bkg = hex_to_ass_color(user_settings["bg_color"], user_settings.get("bg_opacity", 0.6))
                     stylstr_for_subs = f"FontName=Arial,FontSize={user_settings['font_size']},PrimaryColour={clx_pri},BackColour={clx_bkg},BorderStyle={user_settings['border_style']},Outline=2,Shadow=1,Alignment=2,MarginV={user_settings['margin_v']}"
 
                     safe_srt_path = os.path.relpath(path_srt_grp).replace("\\", "/").replace("'", "'\\''")
@@ -823,7 +840,7 @@ def process_primary_automation_loop():
             print("🔗 Merging all processed segment clips into finalized master timeline...")
             subprocess.run(["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-safe", "0", "-f", "concat", "-i", os.path.abspath(final_concat_txt).replace("\\", "/"), "-c", "copy", os.path.abspath(fully_finalized_output).replace("\\", "/")], check=True)
 
-            safe_upload_to_youtube(fully_finalized_output, os.path.join(wkspace, "thumbnail.jpg"), vid_ttl, f"Complete Highlights Recap: {vid_ttl}\nGenerated automatically via AI Cloud System.")
+            safe_upload_to_youtube(fully_finalized_output, os.path.join(wkspace, "thumbnail.jpg"), vid_ttl, f"Complete Highlights Recap: {vid_ttl}")
             
             with open("processed_urls.txt", "a", encoding="utf-8") as fwx_docv: fwx_docv.write(lns+"\n")
             print("================ 🎯 Complete Workflow Operations executed successfully seamlessly! 💯 ================\n")
