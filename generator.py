@@ -8,6 +8,7 @@ import requests
 import traceback
 import subprocess  
 import urllib.parse
+import shutil
 from bs4 import BeautifulSoup
 from collections import Counter
 from PIL import Image, ImageFilter, ImageStat
@@ -55,48 +56,79 @@ def scrape_article(url):
     except:
         return "", []
 
-def extract_hyper_relevant_keyword(title, body_text):
-    """
-    স্মার্ট হাইব্রিড কম্বিনেশন ফর্মুলা: 
-    [খেলোয়াড়ের নাম] + [দলের নাম] + [খেলার নাম/ম্যাচ অপশন]
-    """
-    words = re.findall(r'\b[A-Z][a-z]{3,}\b', body_text)
-    stop_words = {'That', 'This', 'There', 'With', 'From', 'Have', 'Your', 'Which', 'Will', 
-                  'About', 'Like', 'Just', 'When', 'What', 'Know', 'Feel', 'They', 'Team', 'Game', 
-                  'News', 'First', 'Report', 'League', 'South', 'Post', 'Draft', 'Roster'}
+def group_paragraphs(paragraphs, min_words=80):
+    if not paragraphs:
+        return []
     
-    filtered = [w for w in words if w not in stop_words]
+    groups = []
+    temp = []
     
-    if len(filtered) >= 2:
-        unique_nouns = list(dict.fromkeys(filtered))[:2]
-        query = f"{' '.join(unique_nouns)} NBA basketball match action"
-    elif len(filtered) == 1:
-        clean_words = [cw for cw in re.sub(r'[^a-zA-Z0-9\s]', '', title).split() if cw.lower() not in stop_words]
-        team_word = clean_words[0] if clean_words else "match"
-        query = f"{filtered[0]} {team_word} NBA basketball action photo"
-    else:
-        clean_words = [cw for cw in re.sub(r'[^a-zA-Z0-9\s]', '', title).split() if cw.lower() not in stop_words]
-        main_terms = " ".join(clean_words[:2]) if clean_words else "NBA match"
-        query = f"{main_terms} NBA basketball action match photo"
+    for p in paragraphs:
+        p = p.strip()
+        if not p:
+            continue
         
-    print(f"📊 [Hybrid Query Generator] Query Built: '{query}'")
-    return query
+        p_words = p.split()
+        if not temp:
+            temp.append(p)
+        else:
+            temp_word_count = len(" ".join(temp).split())
+            if temp_word_count < min_words:
+                temp.append(p)
+            else:
+                p_word_count = len(p_words)
+                if p_word_count < min_words:
+                    temp.append(p)
+                else:
+                    groups.append("\n\n".join(temp))
+                    temp = [p]
+    
+    if temp:
+        temp_word_count = len(" ".join(temp).split())
+        if temp_word_count < min_words and groups:
+            last_group = groups.pop()
+            groups.append(last_group + "\n\n" + "\n\n".join(temp))
+        else:
+            groups.append("\n\n".join(temp))
+            
+    return groups
 
-def search_vercel_cloud_bridge(keyword):
+# --- আপডেটেড সিম্পল কি-ওয়ার্ড মেথড (কম্পিউটার সফটওয়্যার থেকে সংগৃহীত) ---
+def get_primary_keyword_app_logic(text):
+    words = re.findall(r'\b[A-Z][a-z]{3,}\b', text) 
+    if len(words) < 2:
+        words = re.findall(r'\b[a-zA-Z]{4,}\b', text)
+        
+    stop_words = {'that', 'this', 'there', 'with', 'from', 'have', 'your', 'which', 'will', 
+                  'about', 'like', 'just', 'when', 'what', 'know', 'feel', 'they'}
+    filtered = [w for w in words if w.lower() not in stop_words]
+    
+    if len(filtered) < 2: 
+        print("📊 [App Matching Logic] Primary Subject Keyword Extracted: 'NBA Basketball'")
+        return "NBA Basketball"
+    
+    most_common = Counter(filtered).most_common(2)
+    keyword = f"{most_common[0][0]} {most_common[1][0]}"
+    print(f"📊 [App Matching Logic] Primary Subject Keyword Extracted: '{keyword}'")
+    return keyword
+# ------------------------------------------------------------------------
+
+def search_vercel_cloud_bridge(keyword, engine="ddg"):
     vercel_endpoint = os.environ.get("VERCEL_BRIDGE_URL")
     if not vercel_endpoint:
         return []
     
     try:
-        print(f"🌉 [Vercel Cloud Bridge Active] Fetching High-Res Photos for: '{keyword}'...")
-        r = requests.get(f"{vercel_endpoint}?q={urllib.parse.quote(keyword)}", timeout=10)
+        print(f"🌉 [Vercel Cloud Bridge Active] Fetching High-Res Photos via ({engine}) for: '{keyword}'...")
+        url = f"{vercel_endpoint}?q={urllib.parse.quote(keyword)}&engine={engine}&source={engine}"
+        r = requests.get(url, timeout=10)
         if r.status_code == 200:
             data = r.json()
             images = data.get("images", [])
-            print(f"🎉 SUCCESS! Vercel Bridge delivered {len(images)} authentic player photos!")
+            print(f"🎉 SUCCESS! Vercel Bridge ({engine}) delivered {len(images)} authentic photos!")
             return images
     except Exception as e:
-        print(f"Vercel Bridge Notice: {e}")
+        print(f"Vercel Bridge ({engine}) Notice: {e}")
         
     return []
 
@@ -140,122 +172,154 @@ def search_wikimedia_images(keyword, max_results=15):
     except: pass
     return []
 
-def scrape_images_strictly_web(title, body_text, embedded_photos):
+def scrape_images_strictly_web(title, body_text, embedded_photos, num_images_needed=20):
     candidates = []
     
-    # ১. সংবাদের মূল ওয়েবসাইটের কাভার হিরো ফটোস 
     for hero_p in embedded_photos:
         candidates.append(hero_p)
         
-    subject_query = extract_hyper_relevant_keyword(title, body_text)
+    subject = get_primary_keyword_app_logic(body_text)
 
-    # ২. Vercel ক্লাউড ডাকডাকগো ব্রিজ পার্সার
-    vercel_pics = search_vercel_cloud_bridge(subject_query)
-    candidates.extend(vercel_pics)
+    ddg_pics = search_vercel_cloud_bridge(subject, engine="ddg")
+    candidates.extend(ddg_pics)
+    candidates = list(dict.fromkeys(candidates))
 
-    # ৩. বিং রিয়েলটাইম সরাসরি পপ ফটো রেজাল্ট
-    direct_pics = search_bing_direct_photos(subject_query, max_results=20)
-    candidates.extend(direct_pics)
+    if len(candidates) >= num_images_needed:
+        print(f"🎯 [Smart Stopping] DuckDuckGo delivered {len(candidates)} images which meets the target of {num_images_needed}. Skipping other sources.")
+        return candidates
 
-    # ৪. উইকিমিডিয়া ওপেন পাবলিক মেটা সোর্স 
+    bing_pics = search_vercel_cloud_bridge(subject, engine="bing")
+    candidates.extend(bing_pics)
+    candidates = list(dict.fromkeys(candidates))
+
+    if len(candidates) >= num_images_needed:
+        return candidates
+
+    wiki_pics = search_vercel_cloud_bridge(subject, engine="wiki")
+    candidates.extend(wiki_pics)
+    candidates = list(dict.fromkeys(candidates))
+
     if len(candidates) < 8:
-        wiki_pics = search_wikimedia_images(subject_query, max_results=15)
+        direct_pics = search_bing_direct_photos(subject, max_results=20)
+        candidates.extend(direct_pics)
+        candidates = list(dict.fromkeys(candidates))
+    if len(candidates) < 8:
+        wiki_pics = search_wikimedia_images(subject, max_results=15)
         candidates.extend(wiki_pics)
+        candidates = list(dict.fromkeys(candidates))
 
     return list(dict.fromkeys(candidates))
 
 def filter_and_clean_downloaded_images(images_dir):
-    print("🧹 [Dynamic Smart Cleaner] Filtering small dimension logos and ad visuals...")
-    valid_count = 0
-    all_files = [f for f in os.listdir(images_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-    
-    for fname in all_files:
-        fpath = os.path.join(images_dir, fname)
-        try:
-            file_size = os.path.getsize(fpath)
-            if file_size < 12288: # <12 KB 
-                os.remove(fpath)
-                continue
-                
-            with Image.open(fpath) as img:
-                w, h = img.size
-                
-                if w < 380 or h < 280:
-                    img.close()
-                    os.remove(fpath)
-                    continue
-                    
-                aspect_ratio = w / float(h)
-                if aspect_ratio < 0.40 or aspect_ratio > 2.7:
-                    img.close()
-                    os.remove(fpath)
-                    continue
-                    
-                if img.mode == 'RGB':
-                    stat = ImageStat.Stat(img)
-                    if sum(stat.stddev) < 12: 
-                        img.close()
-                        os.remove(fpath)
-                        continue
-                        
-            valid_count += 1
-        except Exception:
-            try: os.remove(fpath)
-            except: pass
-            
-    print(f"✨ Post-Download Cleaning Complete! Retained {valid_count} verified images.")
+    print("🧹 [Dynamic Smart Cleaner] Disabled as per user request. Retaining all downloaded photos.")
 
-def process_dynamic_thumbnail(images_dir, output_path):
-    all_files = [f for f in os.listdir(images_dir) if f.lower().endswith(('.jpg','.jpeg','.png'))]
+def process_dynamic_thumbnail(wkspace, output_path):
+    all_files = []
+    for root, dirs, files in os.walk(wkspace):
+        for f in files:
+            if f.lower().endswith(('.jpg', '.jpeg', '.png')) and "images" in root:
+                all_files.append(os.path.join(root, f))
+                
     if not all_files: return
     
     wide_images = []
     for f in all_files:
         try:
-            with Image.open(os.path.join(images_dir, f)) as iobj:
+            with Image.open(f) as iobj:
                 w, h = iobj.size
-                if 1.6 <= w/h <= 1.9: wide_images.append(os.path.join(images_dir, f))
+                if 1.6 <= w/h <= 1.9: wide_images.append(f)
         except: pass
 
     try:
         if wide_images:
             Image.open(random.choice(wide_images)).convert("RGB").resize((1920,1080)).save(output_path, quality=95)
         else:
-            Image.open(os.path.join(images_dir, random.choice(all_files))).convert("RGB").resize((1920,1080)).save(output_path, quality=95)
+            Image.open(random.choice(all_files)).convert("RGB").resize((1920,1080)).save(output_path, quality=95)
     except: pass
 
 def clear_temporary_workspace(ws_dir):
     try:
-        for fname in ["audio.mp3", "subtitles.srt", "temp_slider.txt", "temp_output.mp4", "output_video.mp4", "thumbnail.jpg"]:
+        os.makedirs(ws_dir, exist_ok=True)
+        
+        for fname in ["audio.mp3", "subtitles.srt", "temp_slider.txt", "temp_output.mp4", "output_video.mp4", "thumbnail.jpg", "final_concat.txt"]:
             fpath = os.path.join(ws_dir, fname)
             if os.path.exists(fpath): os.remove(fpath)
 
-        for folder_name in ["images", "processed_frames", "rendered_clips"]:
-            target_path = os.path.join(ws_dir, folder_name)
-            os.makedirs(target_path, exist_ok=True)
-            for inner in os.listdir(target_path):
-                os.remove(os.path.join(target_path, inner))
+        for name in os.listdir(ws_dir):
+            path = os.path.join(ws_dir, name)
+            if os.path.isdir(path):
+                shutil.rmtree(path)
     except: pass
 
-def render_zoom_segment_by_ffmpeg(clip_index, segment_duration, input_img_path, output_segment_path):
-    frame_count = max(int(segment_duration * 25), 10)
+def render_segment_by_ffmpeg(clip_index, segment_duration, img_obj, output_segment_path):
+    frame_count = max(int(segment_duration * 30), 10)
     
-    effect_style = clip_index % 3
-    if effect_style == 0:
-        lens_filter = f"zoompan=z='zoom+0.0015':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frame_count}:s=1920x1080:fps=25"
-    elif effect_style == 1:
-        lens_filter = f"zoompan=z='1.03+0.001*in':x='iw/2-(iw/zoom/2)':y='0':d={frame_count}:s=1920x1080:fps=25"
+    if img_obj["type"] == "landscape":
+        step_str = f"{0.15 / frame_count:.6f}"
+        if clip_index % 2 == 0:
+            lens_filter = f"scale=3840x2160,zoompan=z='min(1.15, zoom+{step_str})':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frame_count}:s=3840x2160:fps=30,scale=1920x1080"
+        else:
+            lens_filter = f"scale=3840x2160,zoompan=z='if(lte(zoom,1.0),1.15,max(1.001,zoom-{step_str}))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frame_count}:s=3840x2160:fps=30,scale=1920x1080"
+        
+        cmd_arguments = [
+            "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", 
+            "-loop", "1", "-framerate", "30", "-i", img_obj["path"], 
+            "-vf", lens_filter, "-t", f"{segment_duration:.2f}", 
+            "-c:v", "libx264", "-preset", "ultrafast", 
+            "-tune", "zerolatency", "-pix_fmt", "yuv420p", output_segment_path
+        ]
+        subprocess.run(cmd_arguments, check=True)
     else:
-        lens_filter = f"zoompan=z='1.03+0.001*in':x='iw/2-(iw/zoom/2)':y='ih-(ih/zoom)':d={frame_count}:s=1920x1080:fps=25"
-    
-    cmd_arguments = [
-        "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", 
-        "-loop", "1", "-framerate", "25", "-i", input_img_path, "-t", str(segment_duration), 
-        "-vf", lens_filter, "-c:v", "libx264", "-preset", "ultrafast", 
-        "-tune", "zerolatency", "-pix_fmt", "yuv420p", output_segment_path
-    ]
-    subprocess.run(cmd_arguments, check=True)
+        bg_p = img_obj["bg_path"]
+        fg_p = img_obj["fg_path"]
+        
+        if clip_index % 2 == 0:
+            slide_filter = f"[0:v][1:v]overlay=x='(W-w)/2 - 60 + 120*(t/{segment_duration:.2f})':y=0[out]"
+        else:
+            slide_filter = f"[0:v][1:v]overlay=x='(W-w)/2 + 60 - 120*(t/{segment_duration:.2f})':y=0[out]"
+            
+        cmd_arguments = [
+            "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", 
+            "-loop", "1", "-i", bg_p, 
+            "-loop", "1", "-i", fg_p, 
+            "-filter_complex", slide_filter, "-map", "[out]", 
+            "-t", f"{segment_duration:.2f}", "-r", "30", "-c:v", "libx264", "-preset", "ultrafast", 
+            "-tune", "zerolatency", "-pix_fmt", "yuv420p", output_segment_path
+        ]
+        subprocess.run(cmd_arguments, check=True)
+        
     return output_segment_path
+
+def mix_sfx_to_audio(audio_path, timestamps, sfx_folder, sfx_volume, output_audio_path):
+    if not os.path.exists(sfx_folder):
+        shutil.copyfile(audio_path, output_audio_path)
+        return
+        
+    sfx_files = [os.path.join(sfx_folder, f) for f in os.listdir(sfx_folder) if f.lower().endswith(('.mp3', '.wav'))]
+    if not sfx_files or len(timestamps) <= 1:
+        shutil.copyfile(audio_path, output_audio_path)
+        return
+        
+    cmd = ["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-i", audio_path]
+    filter_inputs = []
+    
+    valid_ts = [t for t in timestamps[1:-1] if t > 0.1]
+    
+    for idx, ts in enumerate(valid_ts):
+        sfx = random.choice(sfx_files)
+        cmd.extend(["-i", sfx])
+        ms = int(ts * 1000)
+        filter_inputs.append(f"[{idx+1}:a]volume={sfx_volume:.2f},adelay=delays={ms}:all=1[sfx{idx}]")
+        
+    if filter_inputs:
+        mix_labels = "".join(f"[sfx{idx}]" for idx in range(len(valid_ts)))
+        filter_complex = ";".join(filter_inputs) + f";[0:a]{mix_labels}amix=inputs={len(valid_ts)+1}:normalize=0[out]"
+        cmd.extend(["-filter_complex", filter_complex, "-map", "[out]"])
+    else:
+        cmd.extend(["-c:a", "copy"])
+        
+    cmd.append(output_audio_path)
+    subprocess.run(cmd, check=True)
 
 def get_sentence_timestamps(srt_path):
     if not os.path.exists(srt_path): return []
@@ -310,6 +374,13 @@ def get_audio_duration(audio_path):
         result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", os.path.abspath(audio_path)], capture_output=True, text=True, check=True)
         return float(result.stdout.strip())
     except: return 0.0
+
+def escape_subtitles_path(path_str):
+    escaped = os.path.abspath(path_str).replace("\\", "/")
+    if ":" in escaped:
+        drive, rest = escaped.split(":", 1)
+        escaped = f"{drive}\\:{rest}"
+    return escaped
 
 def process_primary_automation_loop():
     if not os.path.exists("config.json"): return
@@ -366,15 +437,29 @@ def process_primary_automation_loop():
     print(f"📊 Target Items Found: Processing ALL {len(final_action_items)} matching news articles sequentially for [{time_limit_scale_hrs}h]...")
 
     wkspace = os.path.abspath(os.path.join(os.getcwd(), 'workspace'))
-    target_imgdir = os.path.join(wkspace, 'images')
-    targ_pcdir = os.path.join(wkspace, 'processed_frames')
-    targ_vfrmdir = os.path.join(wkspace, 'rendered_clips')
-    
     blocked_inside_words = [bk.strip().lower() for bk in user_settings["exclude_body_keywords"].split(",") if bk.strip()]
     require_wc = user_settings.get("min_word_count", 150)
+    sfx_volume = user_settings.get("sfx_volume", 0.3)
 
     for track_loop_counter, finalizer_target in enumerate(final_action_items):
         vid_ttl, lns = finalizer_target.get("title", ""), finalizer_target.get("link", "")
+        
+        # টাইটেল সংক্রান্ত সমস্যা সমাধানের অংশ (খালি অথবা "unknown" টাইটেল পেলে লিংক থেকে উদ্ধার করবে)
+        vid_ttl = str(vid_ttl).strip()
+        if not vid_ttl or vid_ttl.lower() == "unknown":
+            try:
+                parsed_path = urllib.parse.urlparse(lns).path
+                path_segments = [p for p in parsed_path.split('/') if p.strip()]
+                if path_segments:
+                    slug_string = re.sub(r'\.[a-zA-Z0-9]+$', '', path_segments[-1])
+                    vid_ttl = slug_string.replace('-', ' ').replace('_', ' ').strip().title()
+                
+                # যদি এরপরও টাইটেল খালি আসে 
+                if not vid_ttl:
+                    vid_ttl = "NBA Latest News Update"
+            except Exception:
+                vid_ttl = "NBA Latest News Update"
+
         print(f"\n=========================================================================")
         print(f"[{track_loop_counter+1}/{len(final_action_items)}] Processing Target Article: >> {vid_ttl}")
         print(f"=========================================================================")
@@ -394,124 +479,350 @@ def process_primary_automation_loop():
             with open("processed_urls.txt", "a") as bwf: bwf.write(lns+"\n"); continue
 
         clear_temporary_workspace(wkspace)
-        os.makedirs(target_imgdir, exist_ok=True)
-        os.makedirs(targ_pcdir, exist_ok=True)
-        os.makedirs(targ_vfrmdir, exist_ok=True)
 
         try:
-            print("Encoding Edge-TTS Audio and generating SRT timing anchors...")
             path_mp3 = os.path.join(wkspace, "audio.mp3")
             path_srt = os.path.join(wkspace, "subtitles.srt")
             
+            print("Encoding Edge-TTS Audio and generating SRT timing anchors...")
             asyncio.run(generate_voice_and_subtitles(text_chunk_collected, user_settings["voice"], path_mp3, path_srt))
             calc_tlength = get_audio_duration(path_mp3)
+            print(f"⏱️ Total generated audio duration: {calc_tlength:.2f} seconds.")
 
-            candidate_image_urls = scrape_images_strictly_web(vid_ttl, text_chunk_collected, embedded_page_photos)
+            rendered_paragraph_videos = []
+            raw_paras = text_chunk_collected.split("\n\n")
+            raw_paras = [p.strip() for p in raw_paras if p.strip()]
 
-            succesfully_got_downloads = 0
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-                'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
-            }
+            if calc_tlength < 300.0:
+                print("🟢 Video duration < 5 mins. Processing as a single unified timeline...")
+                
+                global_subject = get_primary_keyword_app_logic(text_chunk_collected)
+                
+                images_dir = os.path.join(wkspace, "images")
+                targ_pcdir = os.path.join(wkspace, 'processed_frames')
+                targ_vfrmdir = os.path.join(wkspace, 'rendered_clips')
+                os.makedirs(images_dir, exist_ok=True)
+                os.makedirs(targ_pcdir, exist_ok=True)
+                os.makedirs(targ_vfrmdir, exist_ok=True)
 
-            for image_link in candidate_image_urls:
-                try:
-                    rd = requests.get(image_link, timeout=5, headers=headers)
-                    if rd.status_code == 200 and len(rd.content) > 10240: 
-                        with open(os.path.join(target_imgdir, f"imv_dw{succesfully_got_downloads:03d}.jpg"), 'wb') as fgxv: 
-                            fgxv.write(rd.content)
-                        succesfully_got_downloads += 1
-                except: pass
+                sentence_timers = get_sentence_timestamps(path_srt)
+                if not sentence_timers: 
+                    sentence_timers = [0.0, calc_tlength]
+                elif sentence_timers[0] > 0.1: 
+                    sentence_timers.insert(0, 0.0)
+                else: 
+                    sentence_timers[0] = 0.0
+                if sentence_timers[-1] < calc_tlength - 0.1:
+                    sentence_timers.append(calc_tlength)
+                total_n_segments = len(sentence_timers) - 1
 
-                if succesfully_got_downloads >= 20:
-                    break
+                num_images_to_download = max(2, min(40, total_n_segments))
+                print(f"📥 Length-based download target: downloading {num_images_to_download} images for {total_n_segments} sentences.")
 
-            filter_and_clean_downloaded_images(target_imgdir)
+                candidate_image_urls = scrape_images_strictly_web(vid_ttl, text_chunk_collected, embedded_page_photos, num_images_needed=num_images_to_download)
 
-            dflocst = sorted([pzbv for pzbv in os.listdir(target_imgdir) if pzbv.endswith(('.jpg','.jpeg','.png'))])
-            print(f"📊 Download Process Complete! Retained {len(dflocst)} verified photos.")
+                successfully_got_downloads = 0
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+                }
 
-            if len(dflocst) < 2: 
-                print("Missing adequate visual web photos for this story. Safely skipping target."); continue
+                for image_link in candidate_image_urls:
+                    try:
+                        rd = requests.get(image_link, timeout=5, headers=headers)
+                        if rd.status_code == 200 and len(rd.content) > 10240: 
+                            with open(os.path.join(images_dir, f"imv_dw{successfully_got_downloads:03d}.jpg"), 'wb') as fgxv: 
+                                fgxv.write(rd.content)
+                            successfully_got_downloads += 1
+                    except: pass
 
-            print("Designing Blurred side padded HD 1080p graphics Canvas...")
-            process_dynamic_thumbnail(target_imgdir, os.path.join(wkspace, "thumbnail.jpg"))
+                    if successfully_got_downloads >= num_images_to_download:
+                        break
 
-            for p_file in dflocst:
-                try:
-                    with Image.open(os.path.join(target_imgdir, p_file)) as obimgstrm:
-                        base_rgb_convert = obimgstrm.convert('RGB')
-                        im_w, im_h = base_rgb_convert.size
-                        
-                        if (im_w / im_h) < 1.7:
-                            blurred_bg = base_rgb_convert.resize((1920, 1080)).filter(ImageFilter.GaussianBlur(20))
-                            new_fit_width = int(1080 * (im_w / im_h))
-                            sharp_fg = base_rgb_convert.resize((new_fit_width, 1080))
-                            blurred_bg.paste(sharp_fg, ((1920 - new_fit_width) // 2, 0))
-                            final_output_layer = blurred_bg
-                        else: 
-                            final_output_layer = base_rgb_convert.resize((1920, 1080))
+                filter_and_clean_downloaded_images(images_dir)
+                dflocst = sorted([pzbv for pzbv in os.listdir(images_dir) if pzbv.endswith(('.jpg','.jpeg','.png'))])
+
+                if not dflocst:
+                    print("⚠️ No direct photos. Running fallback search with general title keywords...")
+                    fallback_urls = scrape_images_strictly_web(vid_ttl, vid_ttl, [], num_images_needed=num_images_to_download)
+                    for image_link in fallback_urls[:5]:
+                        try:
+                            rd = requests.get(image_link, timeout=5, headers=headers)
+                            if rd.status_code == 200 and len(rd.content) > 10240:
+                                with open(os.path.join(images_dir, f"imv_dw{successfully_got_downloads:03d}.jpg"), 'wb') as fgxv: 
+                                    fgxv.write(rd.content)
+                                successfully_got_downloads += 1
+                        except: pass
+                    filter_and_clean_downloaded_images(images_dir)
+                    dflocst = sorted([pzbv for pzbv in os.listdir(images_dir) if pzbv.endswith(('.jpg','.jpeg','.png'))])
+
+                if not dflocst:
+                    print("❌ Missing adequate visual web photos. Safely skipping target.")
+                    continue
+
+                processed_images = []
+                for p_file in dflocst:
+                    try:
+                        img_path = os.path.join(images_dir, p_file)
+                        with Image.open(img_path) as obimgstrm:
+                            base_rgb_convert = obimgstrm.convert('RGB')
+                            im_w, im_h = base_rgb_convert.size
+                            aspect_ratio = im_w / float(im_h)
                             
-                        final_output_layer.save(os.path.join(targ_pcdir, f"pf_{p_file}"), quality=90)
-                except: pass
+                            if aspect_ratio >= 1.5:
+                                final_path = os.path.join(targ_pcdir, f"pf_land_{p_file}")
+                                base_rgb_convert.resize((1920, 1080)).save(final_path, quality=90)
+                                processed_images.append({
+                                    "type": "landscape",
+                                    "path": final_path
+                                })
+                            else:
+                                blurred_bg = base_rgb_convert.resize((1920, 1080)).filter(ImageFilter.GaussianBlur(20))
+                                bg_path = os.path.join(targ_pcdir, f"bg_{p_file}")
+                                blurred_bg.save(bg_path, quality=90)
+                                
+                                new_fit_width = int(1080 * aspect_ratio)
+                                sharp_fg = base_rgb_convert.resize((new_fit_width, 1080))
+                                fg_path = os.path.join(targ_pcdir, f"fg_{p_file}")
+                                sharp_fg.save(fg_path, quality=95)
+                                
+                                processed_images.append({
+                                    "type": "portrait",
+                                    "bg_path": bg_path,
+                                    "fg_path": fg_path
+                                })
+                    except Exception as e:
+                        print(f"Error processing image {p_file}: {e}")
 
-            pil_rendered_list = sorted(os.listdir(targ_pcdir))
-            if not pil_rendered_list: continue
+                if not processed_images: 
+                    continue
 
-            sentence_timers = get_sentence_timestamps(path_srt)
-            pil_frames_len = len(pil_rendered_list)
-            
-            if not sentence_timers: 
-                sentence_timers = [u_item * (calc_tlength / pil_frames_len) for u_item in range(pil_frames_len)]
-            elif sentence_timers[0] > 0.1: 
-                sentence_timers.insert(0, 0.0)
-            else: 
-                sentence_timers[0] = 0.0
-            sentence_timers.append(calc_tlength)
-            total_n_segments = len(sentence_timers) - 1
+                lines_for_slider_doc = []
+                with ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as thex:
+                    rendered_segment_tasks = []
+                    for sg_ix in range(total_n_segments):
+                        s_gap = sentence_timers[sg_ix+1] - sentence_timers[sg_ix]
+                        if s_gap <= 0.1: continue
+                        img_obj = processed_images[sg_ix % len(processed_images)]
+                        output_segment_path = os.path.join(targ_vfrmdir, f"seg_{sg_ix:04d}.mp4")
+                        rendered_segment_tasks.append(thex.submit(render_segment_by_ffmpeg, sg_ix, s_gap, img_obj, output_segment_path))
+                        
+                    for task_obj in rendered_segment_tasks: 
+                        absolute_clip_path = os.path.abspath(task_obj.result()).replace("\\", "/").replace("'", "'\\''")
+                        lines_for_slider_doc.append(f"file '{absolute_clip_path}'")
 
-            lines_for_slider_doc = []
-            print(f"Rendering {total_n_segments} unique video clip scenes matching individual sentence audio using FFmpeg...")
+                tmpsldr_txt_path = os.path.join(wkspace, "temp_slider.txt")
+                with open(tmpsldr_txt_path, "w", encoding="utf-8") as fw12z: fw12z.write("\n".join(lines_for_slider_doc))
+                
+                raw_tmp_output = os.path.join(wkspace, "temp_output.mp4")
+                para_final_output = os.path.join(wkspace, "para_0_final.mp4")
+                
+                path_sfx_mp3 = os.path.join(wkspace, "audio_sfx.mp3")
+                mix_sfx_to_audio(path_mp3, sentence_timers, "sound_effects", sfx_volume, path_sfx_mp3)
 
-            # সঠিক ম্যাপিং `output_segment_path` ডিক্লারেশন সেশন 
-            with ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as thex:
-                rendered_segment_tasks = []
-                for sg_ix in range(total_n_segments):
-                    s_gap = sentence_timers[sg_ix+1] - sentence_timers[sg_ix]
-                    if s_gap <= 0: continue
-                    img_f = os.path.join(targ_pcdir, pil_rendered_list[sg_ix % len(pil_rendered_list)])
-                    output_segment_path = os.path.join(targ_vfrmdir, f"seg_{sg_ix:04d}.mp4")
-                    rendered_segment_tasks.append(thex.submit(render_zoom_segment_by_ffmpeg, sg_ix, s_gap, img_f, output_segment_path))
+                subprocess.run(["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-safe", "0", "-f", "concat", "-i", os.path.abspath(tmpsldr_txt_path).replace("\\", "/"), "-i", os.path.abspath(path_sfx_mp3).replace("\\", "/"), "-c:v", "copy", "-c:a", "copy", "-shortest", os.path.abspath(raw_tmp_output).replace("\\", "/")], check=True)
+
+                clx_pri = hex_to_ass_color(user_settings["font_color"], 1.0)
+                clx_bkg = hex_to_ass_color(user_settings["bg_color"], user_settings.get("bg_opacity", 0.5))
+                stylstr_for_subs = f"FontName=Arial,FontSize={user_settings['font_size']},PrimaryColour={clx_pri},BackColour={clx_bkg},BorderStyle={user_settings['border_style']},Outline=2,Shadow=1,Alignment=2,MarginV={user_settings['margin_v']}"
+
+                safe_srt_path = os.path.relpath(path_srt).replace("\\", "/").replace("'", "'\\''")
+                tclmstr_subtitles_filter = f"subtitles='{safe_srt_path}':force_style='{stylstr_for_subs}'"
+
+                subs_cmd = [
+                    "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", 
+                    "-i", os.path.abspath(raw_tmp_output).replace("\\", "/"), 
+                    "-vf", tclmstr_subtitles_filter, 
+                    "-c:v", "libx264", "-crf", "18", "-preset", "ultrafast", "-tune", "zerolatency",
+                    "-c:a", "copy", os.path.abspath(para_final_output).replace("\\", "/")
+                ]
+                subprocess.run(subs_cmd, check=True)
+                
+                rendered_paragraph_videos.append(para_final_output)
+
+            else:
+                print("🔵 Video duration >= 5 mins. Grouping every 3 paragraphs as 1 consolidated cluster...")
+                
+                paragraph_groups = []
+                for i in range(0, len(raw_paras), 3):
+                    chunk = raw_paras[i:i+3]
+                    paragraph_groups.append("\n\n".join(chunk))
+
+                for idx, grp_text in enumerate(paragraph_groups):
+                    para_ws = os.path.join(wkspace, f"para_{idx}")
+                    images_dir = os.path.join(para_ws, 'images')
+                    targ_pcdir = os.path.join(para_ws, 'processed_frames')
+                    targ_vfrmdir = os.path.join(para_ws, 'rendered_clips')
+
+                    os.makedirs(para_ws, exist_ok=True)
+                    os.makedirs(images_dir, exist_ok=True)
+                    os.makedirs(targ_pcdir, exist_ok=True)
+                    os.makedirs(targ_vfrmdir, exist_ok=True)
+
+                    print(f"\n🎬 [Processing Cluster {idx+1}/{len(paragraph_groups)}]")
                     
-                for task_obj in rendered_segment_tasks: 
-                    absolute_clip_path = os.path.abspath(task_obj.result()).replace("\\", "/")
-                    lines_for_slider_doc.append(f"file '{absolute_clip_path}'")
+                    path_mp3_grp = os.path.join(para_ws, f"voice_{idx}.mp3")
+                    path_srt_grp = os.path.join(para_ws, f"subtitles_{idx}.srt")
+                    
+                    asyncio.run(generate_voice_and_subtitles(grp_text, user_settings["voice"], path_mp3_grp, path_srt_grp))
+                    calc_tlength_grp = get_audio_duration(path_mp3_grp)
 
-            tmpsldr_txt_path = os.path.join(wkspace, "temp_slider.txt")
-            with open(tmpsldr_txt_path, "w", encoding="utf-8") as fw12z: fw12z.write("\n".join(lines_for_slider_doc))
-            
-            raw_tmp_output = os.path.join(wkspace, "temp_output.mp4")
+                    sentence_timers = get_sentence_timestamps(path_srt_grp)
+                    if not sentence_timers: 
+                        sentence_timers = [0.0, calc_tlength_grp]
+                    elif sentence_timers[0] > 0.1: 
+                        sentence_timers.insert(0, 0.0)
+                    else: 
+                        sentence_timers[0] = 0.0
+                    if sentence_timers[-1] < calc_tlength_grp - 0.1:
+                        sentence_timers.append(calc_tlength_grp)
+                    total_n_segments = len(sentence_timers) - 1
+
+                    num_images_to_download = max(2, min(30, total_n_segments))
+                    print(f"📥 Cluster download target: downloading {num_images_to_download} images for {total_n_segments} sentences.")
+
+                    grp_keyword = get_primary_keyword_app_logic(grp_text)
+                    candidate_image_urls = scrape_images_strictly_web(vid_ttl, grp_text, embedded_page_photos, num_images_needed=num_images_to_download)
+
+                    successfully_got_downloads = 0
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+                    }
+
+                    for image_link in candidate_image_urls:
+                        try:
+                            rd = requests.get(image_link, timeout=5, headers=headers)
+                            if rd.status_code == 200 and len(rd.content) > 10240: 
+                                with open(os.path.join(images_dir, f"imv_dw{successfully_got_downloads:03d}.jpg"), 'wb') as fgxv: 
+                                    fgxv.write(rd.content)
+                                successfully_got_downloads += 1
+                        except: pass
+
+                        if successfully_got_downloads >= num_images_to_download:
+                            break
+
+                    filter_and_clean_downloaded_images(images_dir)
+                    dflocst = sorted([pzbv for pzbv in os.listdir(images_dir) if pzbv.endswith(('.jpg','.jpeg','.png'))])
+
+                    if not dflocst:
+                        print("⚠️ No direct photos. Running fallback search with general title keywords...")
+                        fallback_urls = scrape_images_strictly_web(vid_ttl, vid_ttl, [], num_images_needed=num_images_to_download)
+                        for image_link in fallback_urls[:5]:
+                            try:
+                                rd = requests.get(image_link, timeout=5, headers=headers)
+                                if rd.status_code == 200 and len(rd.content) > 10240:
+                                    with open(os.path.join(images_dir, f"imv_dw{successfully_got_downloads:03d}.jpg"), 'wb') as fgxv: 
+                                        fgxv.write(rd.content)
+                                    successfully_got_downloads += 1
+                                    
+                            except: pass
+                        filter_and_clean_downloaded_images(images_dir)
+                        dflocst = sorted([pzbv for pzbv in os.listdir(images_dir) if pzbv.endswith(('.jpg','.jpeg','.png'))])
+
+                    if not dflocst:
+                        print("❌ Missing adequate visual web photos. Safely skipping paragraph.")
+                        continue
+
+                    processed_images = []
+                    for p_file in dflocst:
+                        try:
+                            img_path = os.path.join(images_dir, p_file)
+                            with Image.open(img_path) as obimgstrm:
+                                base_rgb_convert = obimgstrm.convert('RGB')
+                                im_w, im_h = base_rgb_convert.size
+                                aspect_ratio = im_w / float(im_h)
+                                
+                                if aspect_ratio >= 1.5:
+                                    final_path = os.path.join(targ_pcdir, f"pf_land_{p_file}")
+                                    base_rgb_convert.resize((1920, 1080)).save(final_path, quality=90)
+                                    processed_images.append({
+                                        "type": "landscape",
+                                        "path": final_path
+                                    })
+                                else:
+                                    blurred_bg = base_rgb_convert.resize((1920, 1080)).filter(ImageFilter.GaussianBlur(20))
+                                    bg_path = os.path.join(targ_pcdir, f"bg_{p_file}")
+                                    blurred_bg.save(bg_path, quality=90)
+                                    
+                                    new_fit_width = int(1080 * aspect_ratio)
+                                    sharp_fg = base_rgb_convert.resize((new_fit_width, 1080))
+                                    fg_path = os.path.join(targ_pcdir, f"fg_{p_file}")
+                                    sharp_fg.save(fg_path, quality=95)
+                                    
+                                    processed_images.append({
+                                        "type": "portrait",
+                                        "bg_path": bg_path,
+                                        "fg_path": fg_path
+                                    })
+                        except Exception as e:
+                            print(f"Error processing image {p_file}: {e}")
+
+                    if not processed_images: 
+                        continue
+
+                    lines_for_slider_doc = []
+                    with ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as thex:
+                        rendered_segment_tasks = []
+                        for sg_ix in range(total_n_segments):
+                            s_gap = sentence_timers[sg_ix+1] - sentence_timers[sg_ix]
+                            if s_gap <= 0.1: continue
+                            img_obj = processed_images[sg_ix % len(processed_images)]
+                            output_segment_path = os.path.join(targ_vfrmdir, f"seg_{sg_ix:04d}.mp4")
+                            rendered_segment_tasks.append(thex.submit(render_segment_by_ffmpeg, sg_ix, s_gap, img_obj, output_segment_path))
+                            
+                        for task_obj in rendered_segment_tasks: 
+                            absolute_clip_path = os.path.abspath(task_obj.result()).replace("\\", "/").replace("'", "'\\''")
+                            lines_for_slider_doc.append(f"file '{absolute_clip_path}'")
+
+                    tmpsldr_txt_path = os.path.join(para_ws, "temp_slider.txt")
+                    with open(tmpsldr_txt_path, "w", encoding="utf-8") as fw12z: fw12z.write("\n".join(lines_for_slider_doc))
+                    
+                    raw_tmp_output = os.path.join(para_ws, "temp_output.mp4")
+                    para_final_output = os.path.join(para_ws, f"para_{idx}_final.mp4")
+                    
+                    path_sfx_mp3 = os.path.join(para_ws, f"voice_{idx}_sfx.mp3")
+                    mix_sfx_to_audio(path_mp3_grp, sentence_timers, "sound_effects", sfx_volume, path_sfx_mp3)
+
+                    subprocess.run(["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-safe", "0", "-f", "concat", "-i", os.path.abspath(tmpsldr_txt_path).replace("\\", "/"), "-i", os.path.abspath(path_sfx_mp3).replace("\\", "/"), "-c:v", "copy", "-c:a", "copy", "-shortest", os.path.abspath(raw_tmp_output).replace("\\", "/")], check=True)
+
+                    clx_pri = hex_to_ass_color(user_settings["font_color"], 1.0)
+                    clx_bkg = hex_to_ass_color(user_settings["bg_color"], user_settings.get("bg_opacity", 0.5))
+                    stylstr_for_subs = f"FontName=Arial,FontSize={user_settings['font_size']},PrimaryColour={clx_pri},BackColour={clx_bkg},BorderStyle={user_settings['border_style']},Outline=2,Shadow=1,Alignment=2,MarginV={user_settings['margin_v']}"
+
+                    safe_srt_path = os.path.relpath(path_srt_grp).replace("\\", "/").replace("'", "'\\''")
+                    tclmstr_subtitles_filter = f"subtitles='{safe_srt_path}':force_style='{stylstr_for_subs}'"
+
+                    subs_cmd = [
+                        "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", 
+                        "-i", os.path.abspath(raw_tmp_output).replace("\\", "/"), 
+                        "-vf", tclmstr_subtitles_filter, 
+                        "-c:v", "libx264", "-crf", "18", "-preset", "ultrafast", "-tune", "zerolatency",
+                        "-c:a", "copy", os.path.abspath(para_final_output).replace("\\", "/")
+                    ]
+                    subprocess.run(subs_cmd, check=True)
+                    
+                    rendered_paragraph_videos.append(para_final_output)
+
+            rendered_paragraph_videos = [p for p in rendered_paragraph_videos if os.path.exists(p)]
+
+            if not rendered_paragraph_videos:
+                print("⚠️ No paragraph segments successfully generated. Skipping.")
+                continue
+
+            print("Designing Dynamic HD Cover Photo...")
+            process_dynamic_thumbnail(wkspace, os.path.join(wkspace, "thumbnail.jpg"))
+
+            final_concat_txt = os.path.join(wkspace, "final_concat.txt")
+            with open(final_concat_txt, "w", encoding="utf-8") as f:
+                for p in rendered_paragraph_videos:
+                    safe_p = os.path.abspath(p).replace('\\', '/').replace("'", "'\\''")
+                    f.write(f"file '{safe_p}'\n")
+
             fully_finalized_output = os.path.join(wkspace, "output_video.mp4")
-            
-            print("Combining audio and hardcoded subtitles into final video file...")
-            subprocess.run(["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-safe", "0", "-f", "concat", "-i", os.path.abspath(tmpsldr_txt_path).replace("\\", "/"), "-i", os.path.abspath(path_mp3).replace("\\", "/"), "-c:v", "copy", "-c:a", "copy", "-shortest", os.path.abspath(raw_tmp_output).replace("\\", "/")], check=True)
+            print("🔗 Merging all processed segment clips into finalized master timeline...")
+            subprocess.run(["ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", "-safe", "0", "-f", "concat", "-i", os.path.abspath(final_concat_txt).replace("\\", "/"), "-c", "copy", os.path.abspath(fully_finalized_output).replace("\\", "/")], check=True)
 
-            clx_pri = hex_to_ass_color(user_settings["font_color"], 1.0)
-            clx_bkg = hex_to_ass_color(user_settings["bg_color"], user_settings.get("bg_opacity", 0.5))
-            stylstr_for_subs = f"FontName=Arial,FontSize={user_settings['font_size']},PrimaryColour={clx_pri},BackColour={clx_bkg},BorderStyle={user_settings['border_style']},Outline=2,Shadow=1,Alignment=2,MarginV={user_settings['margin_v']}"
-
-            absolute_srt_path = os.path.abspath(path_srt).replace("\\", "/")
-            tclmstr_subtitles_filter = f"subtitles='{absolute_srt_path}':force_style='{stylstr_for_subs}'"
-
-            subs_cmd = [
-                "ffmpeg", "-y", "-nostdin", "-hide_banner", "-loglevel", "error", 
-                "-i", os.path.abspath(raw_tmp_output).replace("\\", "/"), 
-                "-vf", tclmstr_subtitles_filter, 
-                "-c:v", "libx264", "-crf", "18", "-preset", "ultrafast", "-tune", "zerolatency",
-                "-c:a", "copy", os.path.abspath(fully_finalized_output).replace("\\", "/")
-            ]
-            subprocess.run(subs_cmd, check=True)
-            
             safe_upload_to_youtube(fully_finalized_output, os.path.join(wkspace, "thumbnail.jpg"), vid_ttl, f"Complete Highlights Recap: {vid_ttl}\nGenerated automatically via AI Cloud System.")
             
             with open("processed_urls.txt", "a", encoding="utf-8") as fwx_docv: fwx_docv.write(lns+"\n")
