@@ -15,6 +15,14 @@ from PIL import Image, ImageFilter, ImageStat
 from concurrent.futures import ThreadPoolExecutor
 import feedparser  
 import edge_tts
+from keybert import KeyBERT  # KeyBERT ইমপোর্ট করা হলো
+
+# KeyBERT মডেলটি গ্লোবালি লোড করা হলো যেন প্রতিবার ফাংশন কলের সময় রিলোড হতে না হয়
+try:
+    kw_model = KeyBERT()
+except Exception as e:
+    print(f"Warning: Failed to initialize KeyBERT globally: {e}")
+    kw_model = None
 
 async def generate_voice_and_subtitles(text, voice, audio_path, srt_path):
     communicate = edge_tts.Communicate(text, voice)
@@ -35,7 +43,12 @@ def scrape_article(url):
         soup = BeautifulSoup(response.text, 'html.parser')
         
         cleaned_paragraphs = []
-        unwanted_phrases = ["follow", "read more", "cookies", "subscribe", "social media information", "like our page", "bgn community post", "featured in the linc", "the linc!"]
+        unwanted_phrases = [
+            "follow", "read more", "cookies", "subscribe", "social media information", 
+            "like our page", "bgn community post", "featured in the linc", "the linc!",
+            "facebook, instagram", "tiktok, x", "whatsapp, linkedin", "sign up here", 
+            "download here", "newsletters:", "home delivery:"
+        ]
         
         for p in soup.find_all('p'):
             text = p.get_text().strip()
@@ -93,8 +106,24 @@ def group_paragraphs(paragraphs, min_words=80):
             
     return groups
 
+# --- ক্যাপিটাল লেটার, অ্যাপোস্ট্রফি ও হাইফেনসহ সব প্লেয়ারদের নাম চেনার স্মার্ট কিওয়ার্ড ফাংশন ---
 def get_primary_keyword_app_logic(text):
-    words = re.findall(r'\b[A-Z][a-z]{3,}\b', text) 
+    # KeyBERT ব্যবহার করে কি-ওয়ার্ড খোঁজার প্রথম চেষ্টা
+    if kw_model is not None and text and text.strip():
+        try:
+            # keyphrase_ngram_range=(1, 2) দিয়ে ১ অথবা ২ শব্দের কি-ফ্রেজ খোঁজা হচ্ছে
+            keywords = kw_model.extract_keywords(text, keyphrase_ngram_range=(1, 2), stop_words='english', top_n=1)
+            if keywords:
+                keyword = keywords[0][0]
+                print(f"📊 [KeyBERT Logic] Primary Subject Keyword Extracted: '{keyword}'")
+                return keyword
+        except Exception as e:
+            print(f"⚠️ KeyBERT extraction failed, falling back to basic logic: {e}")
+
+    # Fallback Logic: KeyBERT ব্যর্থ হলে বা না থাকলে পূর্বের সাধারণ উপায়ে কি-ওয়ার্ড খোঁজা হবে
+    raw_words = re.findall(r"\b[A-Z][a-zA-Z\'-]{3,}\b", text)
+    words = [w for w in raw_words if not w.isupper()]
+    
     if len(words) < 2:
         words = re.findall(r'\b[a-zA-Z]{4,}\b', text)
         
@@ -102,10 +131,12 @@ def get_primary_keyword_app_logic(text):
                   'about', 'like', 'just', 'when', 'what', 'know', 'feel', 'they'}
     filtered = [w for w in words if w.lower() not in stop_words]
     
-    if len(filtered) < 2: 
-        print("📊 [App Matching Logic] Primary Subject Keyword Extracted: 'NBA Basketball'")
-        return "NBA Basketball"
-    
+    if len(filtered) == 0: 
+        return ""
+    if len(filtered) == 1:
+        print(f"📊 [App Matching Logic] Primary Subject Keyword Extracted: '{filtered[0]}'")
+        return filtered[0]
+        
     most_common = Counter(filtered).most_common(2)
     keyword = f"{most_common[0][0]} {most_common[1][0]}"
     print(f"📊 [App Matching Logic] Primary Subject Keyword Extracted: '{keyword}'")
@@ -180,9 +211,7 @@ def scrape_images_strictly_web(title, body_text, embedded_photos, num_images_nee
 
     if append_toggle and append_word:
         stop_phrases = {
-            'los angeles', 'golden state', 'nba basketball', 'summer league', 
-            'boston celtics', 'new york', 'miami heat', 'bay area', 'dallas mavericks', 
-            'lakers', 'latest update', 'sports news', 'league update', 'news report'
+            'latest news', 'breaking news', 'latest update', 'news update', 'sports news', 'news report'
         }
         is_name = False
         
@@ -190,7 +219,7 @@ def scrape_images_strictly_web(title, body_text, embedded_photos, num_images_nee
             is_name = bool(re.match(r'^([A-Z][a-zA-Z\'-]+\s+){1,2}[A-Z][a-zA-Z\'-]+$', subject.strip()))
             
         if not is_name:
-            subject = f"{subject} {append_word}"
+            subject = f"{subject} {append_word}".strip()
             print(f"🔧 [Modifier Action] Keyword is not a name. Custom suffix appended -> Final Search: '{subject}'")
         else:
             print(f"👤 [Modifier Action] Player name detected! Prefix/Suffix addition skipped -> Final Search: '{subject}'")
@@ -472,9 +501,9 @@ def process_primary_automation_loop():
                     vid_ttl = slug_string.replace('-', ' ').replace('_', ' ').strip().title()
                 
                 if not vid_ttl:
-                    vid_ttl = "NBA Latest News Update"
+                    vid_ttl = "Latest Update"
             except Exception:
-                vid_ttl = "NBA Latest News Update"
+                vid_ttl = "Latest Update"
 
         print(f"\n=========================================================================")
         print(f"[{track_loop_counter+1}/{len(final_action_items)}] Processing Target Article: >> {vid_ttl}")
@@ -509,8 +538,11 @@ def process_primary_automation_loop():
             raw_paras = text_chunk_collected.split("\n\n")
             raw_paras = [p.strip() for p in raw_paras if p.strip()]
 
-            if calc_tlength < 300.0:
-                print("🟢 Video duration < 5 mins. Processing as a single unified timeline...")
+            # =========================================================================
+            # কন্ডিশন ১: ভিডিওর দৈর্ঘ্য ৩ মিনিটের কম হলে (১৮০ সেকেন্ডের নিচে) -> ১টি কি-ওয়ার্ড
+            # =========================================================================
+            if calc_tlength < 180.0:
+                print("🟢 Video duration < 3 mins. Processing as a single unified timeline (1 keyword)...")
                 
                 global_subject = get_primary_keyword_app_logic(text_chunk_collected)
                 
@@ -656,13 +688,22 @@ def process_primary_automation_loop():
                 
                 rendered_paragraph_videos.append(para_final_output)
 
+            # =========================================================================
+            # কন্ডিশন ২: ভিডিওর দৈর্ঘ্য ৩ মিনিটের বেশি হলে (১৮০ সেকেন্ড বা তার বেশি) -> ডায়নামিক কি-ওয়ার্ডস
+            # =========================================================================
             else:
-                print("🔵 Video duration >= 5 mins. Grouping every 3 paragraphs as 1 consolidated cluster...")
+                num_clusters = int(calc_tlength // 180) + 1
+                print(f"🔵 Video duration >= 3 mins ({calc_tlength:.2f}s). Grouping into {num_clusters} consolidated clusters dynamically...")
                 
+                actual_clusters = max(1, min(num_clusters, len(raw_paras)))
                 paragraph_groups = []
-                for i in range(0, len(raw_paras), 3):
-                    chunk = raw_paras[i:i+3]
-                    paragraph_groups.append("\n\n".join(chunk))
+                avg = len(raw_paras) / float(actual_clusters)
+                last = 0.0
+                while last < len(raw_paras):
+                    group_chunk = raw_paras[int(last):int(last + avg)]
+                    if group_chunk:
+                        paragraph_groups.append("\n\n".join(group_chunk))
+                    last += avg
 
                 for idx, grp_text in enumerate(paragraph_groups):
                     para_ws = os.path.join(wkspace, f"para_{idx}")
